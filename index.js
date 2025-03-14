@@ -145,11 +145,11 @@ app.get("/data/:table", async (req, res) => {
   }
 });
 
-// API to Push Data from MongoDB Back to SQL Anywhere
+// API to Push Data from MongoDB Back to Same SQL Anywhere DB
 app.post("/push-sql/:table", async (req, res) => {
   try {
     const { table } = req.params;
-    const { mode = "offline" } = req.query;
+    const { mode = "offline", targetTable } = req.query; // Optional target table
     const connectionString = mode === "offline" ? offlineDB : onlineDB;
     const db = await odbc.connect(connectionString);
 
@@ -168,17 +168,75 @@ app.post("/push-sql/:table", async (req, res) => {
         .map((val) => (typeof val === "string" ? `'${val}'` : val))
         .join(", ");
 
-      const query = `INSERT INTO ${table} (${keys}) VALUES (${values})`;
+      const target = targetTable || table; // Use same table or specified target table
+      const query = `INSERT INTO ${target} (${keys}) VALUES (${values})`;
       await db.query(query);
     }
 
     await db.close();
     res.json({
       success: true,
-      message: `✅ Data pushed back to SQL Anywhere for table ${table}`,
+      message: `✅ Data pushed to SQL Anywhere (${mode}) for table '${
+        targetTable || table
+      }'`,
     });
   } catch (err) {
-    logger.error("❌ Error pushing data back to SQL Anywhere:", err);
+    logger.error("❌ Error pushing data to SQL Anywhere:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// API to Push Data from MongoDB to Another SQL Anywhere DB (External)
+app.post("/push-sql-external/:table", async (req, res) => {
+  try {
+    const { table } = req.params;
+    const { targetTable } = req.query; // Optional target table
+
+    // Load External DB Credentials from .env
+    const DSN = process.env.EXTERNAL_SQL_DSN;
+    const DB_USER = process.env.EXTERNAL_SQL_DB_USER;
+    const DB_PASSWORD = process.env.EXTERNAL_SQL_DB_PASSWORD;
+
+    if (!DSN || !DB_USER || !DB_PASSWORD) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Missing external database credentials in .env (EXTERNAL_SQL_DSN, EXTERNAL_SQL_DB_USER, EXTERNAL_SQL_DB_PASSWORD).",
+      });
+    }
+
+    const externalDB = `DSN=${DSN};UID=${DB_USER};PWD=${DB_PASSWORD}`;
+    const db = await odbc.connect(externalDB);
+
+    const records = await DataModel.find({ table }).select("data -_id");
+
+    if (records.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No data found in MongoDB for this table.",
+      });
+    }
+
+    for (const record of records) {
+      const keys = Object.keys(record.data).join(", ");
+      const values = Object.values(record.data)
+        .map((val) => (typeof val === "string" ? `'${val}'` : val))
+        .join(", ");
+
+      const target = targetTable || table; // Use same table or specified target table
+      const query = `INSERT INTO ${target} (${keys}) VALUES (${values})`;
+      await db.query(query);
+    }
+
+    await db.close();
+    res.json({
+      success: true,
+      message: `✅ Data pushed to external SQL Anywhere DB for table '${
+        targetTable || table
+      }'`,
+    });
+  } catch (err) {
+    logger.error("❌ Error pushing data to external SQL Anywhere DB:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
